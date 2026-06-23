@@ -30,6 +30,9 @@ targets:
           - FairfaxHD.ttf
         NSSupportsLiveActivities: true
         CFBundleDisplayName: Runs
+        # Runs does no networking and uses only Apple-standard (exempt) crypto, so
+        # declare export-compliance exemption here. Skips the prompt on every upload.
+        ITSAppUsesNonExemptEncryption: false
         CFBundleURLTypes:
           - CFBundleURLName: com.manif.runs.deeplink
             CFBundleURLSchemes:

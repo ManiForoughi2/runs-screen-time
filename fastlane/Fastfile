@@ -4,6 +4,13 @@ IOS_APP_ID = "com.manif.runs"
 SCHEME     = "Runs"
 PROJECT    = "Runs.xcodeproj"
 
+# Resolve the .p8 key to an absolute path relative to the project root (one level
+# up from this Fastfile), regardless of fastlane's working directory. ASC_KEY_PATH
+# may be a bare filename (default) or an absolute path.
+ASC_KEY_FILE = File.absolute_path?(ENV["ASC_KEY_PATH"].to_s) ?
+  ENV["ASC_KEY_PATH"] :
+  File.expand_path("../../#{ENV['ASC_KEY_PATH']}", __FILE__)
+
 # ============================================================
 # Runs — iOS screen-time app (App Store Connect)
 #
@@ -16,7 +23,7 @@ platform :ios do
     app_store_connect_api_key(
       key_id:       ENV["ASC_KEY_ID"],
       issuer_id:    ENV["ASC_ISSUER_ID"],
-      key_filepath: File.expand_path(ENV["ASC_KEY_PATH"], File.dirname(__dir__)),
+      key_filepath: ASC_KEY_FILE,
       in_house:     false
     )
   end
@@ -27,7 +34,7 @@ platform :ios do
     Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.create(
       key_id:    ENV["ASC_KEY_ID"],
       issuer_id: ENV["ASC_ISSUER_ID"],
-      filepath:  File.expand_path(ENV["ASC_KEY_PATH"], File.dirname(__dir__))
+      filepath:  ASC_KEY_FILE
     )
     app = Spaceship::ConnectAPI::App.find(IOS_APP_ID)
     if app
@@ -67,7 +74,7 @@ platform :ios do
     Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.create(
       key_id:    ENV["ASC_KEY_ID"],
       issuer_id: ENV["ASC_ISSUER_ID"],
-      filepath:  File.expand_path(ENV["ASC_KEY_PATH"], File.dirname(__dir__))
+      filepath:  ASC_KEY_FILE
     )
     app = Spaceship::ConnectAPI::App.find(IOS_APP_ID)
     UI.user_error!("App #{IOS_APP_ID} not found") if app.nil?

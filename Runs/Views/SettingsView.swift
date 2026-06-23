@@ -108,13 +108,33 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionLabel("RUNS")
             SegmentedPicker(
-                options: [("\(store.sharedRuns) TOTAL", RunMode.shared), ("PER APP", RunMode.perApp)],
+                options: [("SHARED POOL", RunMode.shared), ("PER APP", RunMode.perApp)],
                 selection: store.runMode
             ) { store.setRunMode($0, sharedPool: store.sharedRuns) }
             .disabled(store.isLocked)
             .opacity(store.isLocked ? 0.4 : 1)
+
+            if store.runMode == .shared {
+                HStack(spacing: 16) {
+                    poolStepButton("–") { adjustPool(-1) }
+                    Text("\(store.sharedRuns)")
+                        .font(Theme.mono(28, .bold))
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.fg)
+                        .frame(minWidth: 44)
+                        .contentTransition(.numericText())
+                    poolStepButton("+") { adjustPool(1) }
+                    Text("runs / day")
+                        .font(Theme.mono(12))
+                        .foregroundStyle(Theme.dim)
+                    Spacer()
+                }
+                .padding(.top, 4)
+                .opacity(store.isLocked ? 0.4 : 1)
+            }
+
             Text(store.runMode == .shared
-                 ? "one pool of \(store.sharedRuns) runs across all apps."
+                 ? "one pool, split across all your apps."
                  : "each app gets its own runs per day.")
                 .font(Theme.mono(11))
                 .foregroundStyle(Theme.dim)
@@ -163,6 +183,27 @@ struct SettingsView: View {
 
     private func sectionLabel(_ t: String) -> some View {
         Text(t).font(Theme.mono(11, .bold)).tracking(2).foregroundStyle(Theme.dim)
+    }
+
+    private func adjustPool(_ delta: Int) {
+        guard !store.isLocked else { return }
+        let n = min(12, max(1, store.sharedRuns + delta))
+        withAnimation(.easeOut(duration: 0.12)) {
+            store.setRunMode(.shared, sharedPool: n)
+        }
+    }
+
+    private func poolStepButton(_ glyph: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(glyph)
+                .font(Theme.mono(20, .bold))
+                .foregroundStyle(Theme.fg)
+                .frame(width: 42, height: 42)
+                .overlay(Circle().stroke(Theme.fg, lineWidth: 1.2))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(store.isLocked)
     }
 
     private var header: some View {

@@ -6,10 +6,13 @@ struct OnboardingView: View {
 
     @State private var page = 0
 
-    // nil card at this index renders RunModeChooser, rest are text cards
-    private let chooserIndex = 4
+    private enum Slide {
+        case card(OnboardCard)
+        case modeChooser
+        case poolSize
+    }
 
-    private let cards: [OnboardCard?] = [
+    private let intro: [OnboardCard] = [
         OnboardCard(
             kicker: "THE IDEA",
             title: "you don't get\nendless scrolling.",
@@ -29,14 +32,23 @@ struct OnboardingView: View {
             kicker: "YOUR CALL",
             title: "you set the\nnumbers.",
             body: "minutes per app are yours. first, how should runs work?"
-        ),
-        nil,   // chooserIndex
-        OnboardCard(
-            kicker: "TWO STEPS LEFT",
-            title: "allow screen time,\nthen pick your apps.",
-            body: "screen time is how screenrun locks an app when the clock runs out. nothing leaves your phone."
         )
     ]
+
+    private let outro = OnboardCard(
+        kicker: "TWO STEPS LEFT",
+        title: "allow screen time,\nthen pick your apps.",
+        body: "screen time is how screenrun locks an app when the clock runs out. nothing leaves your phone."
+    )
+
+    // the pool-size slide only appears once shared mode is picked
+    private var slides: [Slide] {
+        var s = intro.map { Slide.card($0) }
+        s.append(.modeChooser)
+        if store.runMode == .shared { s.append(.poolSize) }
+        s.append(.card(outro))
+        return s
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -57,22 +69,19 @@ struct OnboardingView: View {
             .padding(.top, 16)
 
             TabView(selection: $page) {
-                ForEach(cards.indices, id: \.self) { i in
-                    Group {
-                        if let card = cards[i] {
-                            CardView(card: card)
-                        } else {
-                            RunModeChooser(store: store)
-                        }
-                    }
-                    .tag(i)
+                ForEach(slides.indices, id: \.self) { i in
+                    slideView(slides[i]).tag(i)
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             .animation(.easeInOut, value: page)
+            .animation(.easeInOut, value: slides.count)
+            .onChange(of: slides.count) { newCount in
+                if page > newCount - 1 { page = newCount - 1 }
+            }
 
             HStack(spacing: 8) {
-                ForEach(cards.indices, id: \.self) { i in
+                ForEach(slides.indices, id: \.self) { i in
                     Capsule()
                         .fill(i == page ? Theme.fg : Theme.faint)
                         .frame(width: i == page ? 22 : 7, height: 7)
@@ -82,19 +91,28 @@ struct OnboardingView: View {
             .padding(.bottom, 28)
 
             Button {
-                if page < cards.count - 1 {
+                if page < slides.count - 1 {
                     withAnimation { page += 1 }
                 } else {
                     finish()
                 }
             } label: {
-                Text(page < cards.count - 1 ? "NEXT" : "LET'S GO")
+                Text(page < slides.count - 1 ? "NEXT" : "LET'S GO")
             }
-            .buttonStyle(OutlineButtonStyle(filled: page == cards.count - 1))
+            .buttonStyle(OutlineButtonStyle(filled: page == slides.count - 1))
             .padding(.horizontal, 28)
             .padding(.bottom, 40)
         }
         .screenBackground()
+    }
+
+    @ViewBuilder
+    private func slideView(_ slide: Slide) -> some View {
+        switch slide {
+        case .card(let c): CardView(card: c)
+        case .modeChooser: RunModeChooser(store: store)
+        case .poolSize: PoolSizeChooser(store: store)
+        }
     }
 
     private func finish() {
@@ -127,8 +145,8 @@ private struct RunModeChooser: View {
 
             VStack(spacing: 12) {
                 option(
-                    title: "\(store.sharedRuns) RUNS TOTAL",
-                    detail: "one shared pool. spend it on any app.",
+                    title: "SHARED POOL",
+                    detail: "one pile of runs, spend it on any app.",
                     selected: store.runMode == .shared
                 ) { store.setRunMode(.shared, sharedPool: store.sharedRuns) }
 
@@ -171,6 +189,69 @@ private struct RunModeChooser: View {
                     .stroke(selected ? Theme.fg : Theme.hairline, lineWidth: selected ? 1.6 : 1)
             )
             .contentShape(RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct PoolSizeChooser: View {
+    @ObservedObject var store: RunStore
+
+    private var count: Int { store.sharedRuns }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Spacer()
+            Text("SHARED POOL")
+                .font(Theme.mono(12, .bold))
+                .tracking(3)
+                .foregroundStyle(Theme.dim)
+            Text("how many runs\na day?")
+                .font(Theme.mono(30, .bold))
+                .foregroundStyle(Theme.fg)
+                .lineSpacing(4)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 20) {
+                stepButton("–") { set(count - 1) }
+                Text("\(count)")
+                    .font(Theme.mono(56, .bold))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.fg)
+                    .frame(minWidth: 90)
+                    .contentTransition(.numericText())
+                stepButton("+") { set(count + 1) }
+                Spacer()
+            }
+            .padding(.top, 8)
+
+            Text("\(count) runs total, split across all your apps.")
+                .font(Theme.mono(12))
+                .foregroundStyle(Theme.dim)
+                .padding(.top, 2)
+
+            Spacer()
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 32)
+    }
+
+    private func set(_ n: Int) {
+        let clamped = min(12, max(1, n))
+        withAnimation(.easeOut(duration: 0.12)) {
+            store.setRunMode(.shared, sharedPool: clamped)
+        }
+    }
+
+    private func stepButton(_ glyph: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(glyph)
+                .font(Theme.mono(26, .bold))
+                .foregroundStyle(Theme.fg)
+                .frame(width: 56, height: 56)
+                .overlay(Circle().stroke(Theme.fg, lineWidth: 1.4))
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
     }
