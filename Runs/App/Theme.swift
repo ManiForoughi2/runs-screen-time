@@ -10,6 +10,10 @@ enum Theme {
     // registered via Info.plist UIAppFonts
     static let fontName = "FairfaxHD"
 
+    // run pip display tiers: <7 dots+count, 7-9 dots only, 10+ numeric only
+    static let dotsWithCountThreshold = 7
+    static let dotsOnlyThreshold = 10
+
     // FairfaxHD glyphs sit small for their point size, scale up
     private static let scale: CGFloat = 1.18
 

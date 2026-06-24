@@ -155,16 +155,27 @@ private struct RunRow: View {
 
             if showsPips {
                 HStack(spacing: 6) {
-                    ForEach(0..<total, id: \.self) { i in
-                        Circle()
-                            .fill(i < left ? Theme.fg : Color.clear)
-                            .overlay(Circle().stroke(Theme.fg, lineWidth: 1))
-                            .frame(width: 12, height: 12)
+                    // up to 9 runs fit as dots; 10+ would compress so we go numeric
+                    if total < Theme.dotsOnlyThreshold {
+                        ForEach(0..<total, id: \.self) { i in
+                            Circle()
+                                .fill(i < left ? Theme.fg : Color.clear)
+                                .overlay(Circle().stroke(Theme.fg, lineWidth: 1))
+                                .frame(width: 12, height: 12)
+                        }
+                        Spacer()
+                        // 7-9 runs: dots get tight, so the count text is dropped
+                        if total < Theme.dotsWithCountThreshold {
+                            Text("\(left)/\(total) LEFT")
+                                .font(Theme.mono(11))
+                                .foregroundStyle(Theme.dim)
+                        }
+                    } else {
+                        Text("\(left) / \(total) LEFT")
+                            .font(Theme.mono(11))
+                            .foregroundStyle(Theme.dim)
+                        Spacer()
                     }
-                    Spacer()
-                    Text("\(left)/\(total) LEFT")
-                        .font(Theme.mono(11))
-                        .foregroundStyle(Theme.dim)
                 }
             }
 
@@ -199,20 +210,32 @@ private struct PoolBar: View {
                 .tracking(2)
                 .foregroundStyle(Theme.dim)
 
-            HStack(spacing: 9) {
-                ForEach(0..<total, id: \.self) { i in
-                    Circle()
-                        .fill(i < left ? Theme.fg : Color.clear)
-                        .overlay(Circle().stroke(Theme.fg, lineWidth: 1.5))
-                        .frame(width: 18, height: 18)
+            // up to 9 runs fit as dots; 10+ would compress so we go numeric
+            if total < Theme.dotsOnlyThreshold {
+                HStack(spacing: 9) {
+                    ForEach(0..<total, id: \.self) { i in
+                        Circle()
+                            .fill(i < left ? Theme.fg : Color.clear)
+                            .overlay(Circle().stroke(Theme.fg, lineWidth: 1.5))
+                            .frame(width: 18, height: 18)
+                    }
                 }
+
+                Spacer()
+
+                // 7-9 runs: dots get tight, so the count text is dropped
+                if total < Theme.dotsWithCountThreshold {
+                    Text("\(left)/\(total) LEFT")
+                        .font(Theme.mono(15))
+                        .foregroundStyle(Theme.dim)
+                }
+            } else {
+                Spacer()
+
+                Text("\(left) / \(total) LEFT")
+                    .font(Theme.mono(15))
+                    .foregroundStyle(Theme.dim)
             }
-
-            Spacer()
-
-            Text("\(left)/\(total) LEFT")
-                .font(Theme.mono(15))
-                .foregroundStyle(Theme.dim)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 22)

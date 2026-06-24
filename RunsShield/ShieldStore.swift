@@ -11,12 +11,16 @@ struct ShieldStore {
     private static let kSharedRuns = "runs.sharedRuns.v1"
     private static let kSharedUsed = "runs.sharedUsed.v1"
 
+    private static let kActiveRun = "runs.activeRun.v1"
+
     private let defaults = UserDefaults(suiteName: groupID)
     private let limits: [Limit]
     private let runsUsedByID: [String: Int]
     private let runMode: String
     private let sharedRuns: Int
     private let sharedUsed: Int
+    private let activeRunLimitID: String?
+    private let activeRunEndsAt: Date?
 
     init() {
         let d = UserDefaults(suiteName: Self.groupID)
@@ -25,10 +29,28 @@ struct ShieldStore {
         runMode = d?.string(forKey: Self.kRunMode) ?? "perApp"
         sharedRuns = d?.object(forKey: Self.kSharedRuns) as? Int ?? 4
         sharedUsed = d?.integer(forKey: Self.kSharedUsed) ?? 0
+        let run = Self.decode(ActiveRunDTO.self, Self.kActiveRun, d)
+        activeRunLimitID = run?.limitID.uuidString
+        activeRunEndsAt = run?.endsAt
     }
 
     func limit(for token: ApplicationToken) -> Limit? {
         limits.first { $0.token == token }
+    }
+
+    // true only if there's a persisted run for THIS limit whose wall-clock end is
+    // still in the future. if iOS draws the shield for an app whose run already
+    // expired (stale state), this returns false so we show the real block, never
+    // a "your run is active" pass.
+    func hasLiveRun(for limit: Limit) -> Bool {
+        guard let id = activeRunLimitID, id == limit.id,
+              let endsAt = activeRunEndsAt else { return false }
+        return Date() < endsAt
+    }
+
+    private struct ActiveRunDTO: Decodable {
+        let limitID: UUID
+        let endsAt: Date
     }
 
     // NOTE: fresh read per shield show, reflects rollover only after app/monitor

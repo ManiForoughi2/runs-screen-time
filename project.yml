@@ -29,6 +29,13 @@ targets:
         UIAppFonts:
           - FairfaxHD.ttf
         NSSupportsLiveActivities: true
+        # background-refresh wake to reconcile expired runs (one more net for a
+        # short run that ended while Runs was backgrounded)
+        UIBackgroundModes:
+          - fetch
+          - processing
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.manif.runs.refresh
         CFBundleDisplayName: Runs
         # Runs does no networking and uses only Apple-standard (exempt) crypto, so
         # declare export-compliance exemption here. Skips the prompt on every upload.
@@ -94,6 +101,11 @@ targets:
     platform: iOS
     sources:
       - path: RunsMonitor
+      # shared so the monitor can dismiss the Live Activity when a run ends,
+      # even while the main app is killed
+      - path: Runs/Shared/RunActivityAttributes.swift
+      # shared so the monitor + shield can read the active run's wall-clock end
+      - path: Runs/Shared/AppGroup.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.manif.runs.monitor
@@ -109,6 +121,7 @@ targets:
     dependencies:
       - sdk: DeviceActivity.framework
       - sdk: ManagedSettings.framework
+      - sdk: ActivityKit.framework
 
   # the custom block screen (replaces iOS's default "App is restricted" shield).
   # decides between the "out of runs / resets at midnight" and the "start a run"

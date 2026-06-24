@@ -38,30 +38,39 @@ struct RunLiveActivity: Widget {
                         .padding(.top, 2)
                 }
             } compactLeading: {
-                Text(String(context.attributes.appLabel.prefix(1)))
-                    .font(.system(size: 13, weight: .heavy, design: .monospaced))
-                    .foregroundStyle(.white)
-                    .padding(.trailing, 2)
+                // small dot keeps the leading region non-empty so iOS reliably
+                // renders the compact pill (an empty leading/trailing pair can
+                // make the island refuse to draw the timer at all)
+                Circle()
+                    .fill(.white)
+                    .frame(width: 7, height: 7)
             } compactTrailing: {
-                Text(timerInterval: context.state.startedAt...context.state.endsAt, countsDown: true)
-                    .font(.system(.caption2, design: .monospaced).weight(.semibold))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.5)
-                    .fixedSize()
-                    .foregroundStyle(.white)
-                    .padding(.leading, 2)
+                CompactTimer(state: context.state)
             } minimal: {
-                Text(timerInterval: context.state.startedAt...context.state.endsAt, countsDown: true)
-                    .font(.system(.caption2, design: .monospaced).weight(.semibold))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.5)
-                    .fixedSize()
+                // minimal is a single round slot (this app collapses here when it
+                // shares the island) so MM:SS cant fit, show the glyph instead
+                Image(systemName: "timer")
+                    .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(.white)
             }
             .keylineTint(.white)
         }
+    }
+}
+
+// Compact / minimal pill timer. The system gives these regions a tiny budget,
+// so we pin a fixed mono width and count down with .timer. No scale-to-fit fight
+// (that combo flickered and let the pill stretch toward full width).
+private struct CompactTimer: View {
+    let state: RunActivityAttributes.ContentState
+
+    var body: some View {
+        Text(timerInterval: state.startedAt...state.endsAt, countsDown: true)
+            .font(.system(.caption, design: .monospaced).weight(.semibold))
+            .monospacedDigit()
+            .foregroundStyle(.white)
+            .multilineTextAlignment(.center)
+            .frame(width: 44)
     }
 }
 
