@@ -7,11 +7,14 @@ struct SettingsView: View {
     @EnvironmentObject var store: RunStore
     @Environment(\.dismiss) private var dismiss
 
-    @State private var selection = FamilyActivitySelection()
+    // includeEntireCategory expands a picked category (e.g. Social) into its
+    // individual apps so each gets its own limit instead of being ignored
+    @State private var selection = FamilyActivitySelection(includeEntireCategory: true)
     @State private var showPicker = false
     @State private var editing: LimitConfig?
     @State private var showHowItWorks = false
     @State private var pendingLock: LockDuration?
+    @State private var confirmEmergency = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,6 +25,15 @@ struct SettingsView: View {
                     themeSection
 
                     runModeSection
+                        .padding(.top, 26)
+
+                    fullBlockSection
+                        .padding(.top, 26)
+
+                    breatheSection
+                        .padding(.top, 26)
+
+                    webSection
                         .padding(.top, 26)
 
                     if !store.limits.isEmpty {
@@ -35,6 +47,7 @@ struct SettingsView: View {
 
                     Button {
                         selection.applicationTokens = Set(store.limits.map(\.token))
+                        selection.webDomainTokens = store.webDomainTokens
                         showPicker = true
                     } label: {
                         Text(store.limits.isEmpty ? "CHOOSE APPS" : "EDIT APP SELECTION")
@@ -72,7 +85,7 @@ struct SettingsView: View {
         .animation(.easeInOut(duration: 0.18), value: showHowItWorks)
         .familyActivityPicker(isPresented: $showPicker, selection: $selection)
         .onChange(of: selection) { newValue in
-            reconcile(newValue.applicationTokens)
+            reconcile(newValue)
         }
         .sheet(item: $editing) { limit in
             LimitEditor(limit: limit) { updated in
@@ -91,6 +104,15 @@ struct SettingsView: View {
             Text(dur == .forever
                  ? "You won't be able to loosen any settings. The only way to undo this is to delete the app."
                  : "You won't be able to loosen any settings for \(dur.label). You can still make them stricter.")
+        }
+        .alert("Use an emergency?", isPresented: $confirmEmergency) {
+            Button("Unlock \(Emergency.minutes) min", role: .destructive) {
+                engine.startEmergencyRun()
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This opens all your blocked apps for \(Emergency.minutes) minutes, then they lock again. You get \(Emergency.total) emergencies every 7 days.")
         }
     }
 
@@ -143,6 +165,178 @@ struct SettingsView: View {
                 .font(Theme.mono(11))
                 .foregroundStyle(Theme.dim)
         }
+    }
+
+    private var fullBlockSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionLabel("FULL BLOCK")
+            SegmentedPicker(
+                options: [("OFF", false), ("ON", true)],
+                selection: store.fullBlock
+            ) { on in
+                withAnimation(.easeOut(duration: 0.15)) {
+                    store.setFullBlock(on)
+                }
+                engine.reapplyBaselineShield()
+            }
+            // once locked you can turn full block ON (tightening) but not OFF
+            .disabled(store.isLocked && store.fullBlock)
+            .opacity(store.isLocked && store.fullBlock ? 0.4 : 1)
+
+            Text(store.fullBlock
+                 ? "your apps stay locked with no runs. use an emergency below only when you really need in."
+                 : "turn on to fully block your apps. no runs, emergency only.")
+                .font(Theme.mono(11))
+                .foregroundStyle(Theme.dim)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if store.fullBlock {
+                emergencyRow
+                    .padding(.top, 6)
+            }
+        }
+    }
+
+    private var breatheSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionLabel("BREATHE")
+            SegmentedPicker(
+                options: [("OFF", 0), ("3S", 3), ("5S", 5), ("10S", 10)],
+                selection: store.breatheSeconds
+            ) { store.setBreatheSeconds($0) }
+
+            if store.breatheSeconds > 0 {
+                SegmentedPicker(
+                    options: [("WITH RUNS", false), ("JUST BREATHE", true)],
+                    selection: store.breatheSolo
+                ) { on in
+                    store.setBreatheSolo(on)
+                    engine.reapplyBaselineShield()
+                }
+                // once locked you can go back to runs (tightening) but not drop the budget
+                .disabled(store.isLocked && !store.breatheSolo)
+                .opacity(store.isLocked && !store.breatheSolo ? 0.4 : 1)
+            }
+
+            Text(breatheHint)
+                .font(Theme.mono(11))
+                .foregroundStyle(Theme.dim)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var breatheHint: String {
+        if store.breatheSeconds == 0 {
+            return "the shield is a wall. runs only start from this app."
+        }
+        return store.breatheSolo
+            ? "no runs, no budget. every open is one slow breath, and the app rests again after its minutes."
+            : "a resting app's shield offers one slow breath. breathe, then the run starts right there."
+    }
+
+    private var webSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionLabel("WEBSITES")
+            SegmentedPicker(
+                options: [("OFF", false), ("ON", true)],
+                selection: store.webBlocking
+            ) { on in
+                store.setWebBlocking(on)
+                engine.reapplyBaselineShield()
+            }
+            // once locked web blocking can be turned ON (tightening) but not OFF
+            .disabled(store.isLocked && store.webBlocking)
+            .opacity(store.isLocked && store.webBlocking ? 0.4 : 1)
+
+            Text(store.webBlocking
+                 ? "each app's website rests too, in every browser — instagram locks instagram.com. matched automatically, or tap sites below. breathe a site open from home."
+                 : "apps lock, their websites stay open in the browser.")
+                .font(Theme.mono(11))
+                .foregroundStyle(Theme.dim)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if store.webBlocking {
+                platformChips
+                    .padding(.top, 4)
+
+                if !store.webDomainTokens.isEmpty {
+                    Text("+\(store.webDomainTokens.count) site\(store.webDomainTokens.count == 1 ? "" : "s") from the app picker")
+                        .font(Theme.mono(11))
+                        .foregroundStyle(Theme.dim)
+                }
+            }
+        }
+    }
+
+    private var platformChips: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], spacing: 8) {
+            ForEach(Platform.all) { platform in
+                let on = store.isPlatformBlocked(platform.id)
+                Button {
+                    store.togglePlatform(platform.id)
+                    engine.reapplyBaselineShield()
+                } label: {
+                    Text(platform.name.uppercased())
+                        .font(Theme.mono(11, .semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .foregroundStyle(on ? Theme.bg : Theme.dim)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(on ? Theme.fg : Color.clear)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(on ? Theme.fg : Theme.hairline, lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .contentShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var emergencyRow: some View {
+        let left = store.emergenciesLeft
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                ForEach(0..<Emergency.total, id: \.self) { i in
+                    Circle()
+                        .fill(i < left ? Theme.fg : Color.clear)
+                        .overlay(Circle().stroke(Theme.fg, lineWidth: 1.2))
+                        .frame(width: 12, height: 12)
+                }
+                Text("\(left)/\(Emergency.total) EMERGENCIES")
+                    .font(Theme.mono(11))
+                    .foregroundStyle(Theme.dim)
+                Spacer()
+            }
+
+            Button {
+                confirmEmergency = true
+            } label: {
+                Text(left > 0 ? "EMERGENCY · \(Emergency.minutes) MIN" : "NO EMERGENCIES LEFT")
+            }
+            .buttonStyle(OutlineButtonStyle(filled: left > 0))
+            .disabled(!store.canStartEmergency())
+            .opacity(store.canStartEmergency() ? 1 : 0.4)
+
+            if let refill = store.nextEmergencyRefill() {
+                Text(emergencyRefillText(refill))
+                    .font(Theme.mono(11))
+                    .foregroundStyle(Theme.dim)
+            }
+        }
+    }
+
+    private func emergencyRefillText(_ date: Date) -> String {
+        let secs = max(0, date.timeIntervalSinceNow)
+        let days = Int(secs / 86_400)
+        let hours = Int((secs.truncatingRemainder(dividingBy: 86_400)) / 3600)
+        if days >= 1 { return "next emergency in \(days)d \(hours)h" }
+        let mins = Int((secs.truncatingRemainder(dividingBy: 3600)) / 60)
+        if hours >= 1 { return "next emergency in \(hours)h \(mins)m" }
+        return "next emergency in \(mins)m"
     }
 
     private var lockSection: some View {
@@ -231,14 +425,14 @@ struct SettingsView: View {
         .padding(.bottom, 20)
     }
 
-    private func reconcile(_ tokens: Set<ApplicationToken>) {
+    private func reconcile(_ sel: FamilyActivitySelection) {
         var limits = store.limits
 
-        limits.removeAll { !tokens.contains($0.token) }
+        limits.removeAll { !sel.applicationTokens.contains($0.token) }
 
         // empty label, rows use Apples real name; label only nicknames the Live Activity
         let existing = Set(limits.map(\.token))
-        for token in tokens where !existing.contains(token) {
+        for token in sel.applicationTokens where !existing.contains(token) {
             limits.append(LimitConfig(
                 token: token,
                 label: "",
@@ -248,6 +442,7 @@ struct SettingsView: View {
         }
 
         store.setLimits(limits)
+        store.setWebDomainTokens(sel.webDomainTokens)
         engine.reapplyBaselineShield()
     }
 }

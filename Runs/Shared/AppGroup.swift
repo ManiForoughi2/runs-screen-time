@@ -21,9 +21,32 @@ enum StoreKey {
     static let completedRuns = "runs.completedRuns.v1"
     static let reviewAsked = "runs.reviewAsked.v1"
     static let lockUntil = "runs.lockUntil.v1"         // epoch; 0 = unlocked
+    static let fullBlock = "runs.fullBlock.v1"         // bool; all apps 0 runs, emergency-only
+    static let emergencyUses = "runs.emergencyUses.v1" // [Double] epochs of spent emergencies
 
     // written by the shield action extension on START A RUN tap, read + cleared
     // by the app on foreground since the shield process cant launch us itself
     static let shieldIntentToken = "runs.shieldIntent.tokenData.v1"
     static let shieldIntentAt = "runs.shieldIntent.at.v1"
+
+    // breathe-to-open: 0 = off, otherwise seconds of pause the shield enforces
+    static let breatheSeconds = "runs.breatheSeconds.v1"
+    // bool: breathe stands alone — no run budget, every open is just one breath
+    static let breatheSolo = "runs.breatheSolo.v1"
+    // in-flight breathe pause {limitID, startedAt}, written by the shield action
+    static let breatheSession = "runs.breatheSession.v1"
+
+    // web blocking: bool (missing = on)
+    static let webBlocking = "runs.webBlocking.v1"
+    // auto-detected app<->site pairs, limitID uuid string -> platform id.
+    // written by the shield extension the first time it renders for a known app
+    static let platformPairs = "runs.platformPairs.v1"
+    // manual per-platform toggles from settings, platform id -> bool
+    static let platformOverrides = "runs.platformOverrides.v1"
+    // websites hand-picked in the family activity picker (Set<WebDomainToken> json)
+    static let webDomainTokens = "runs.webDomainTokens.v1"
+    // live breathe-opened web sessions, platform id -> endsAt epoch. iOS chrome/
+    // brave can't run extensions, so the breathe happens in the app and the
+    // site unblocks here for its minutes
+    static let webSessions = "runs.webSessions.v1"
 }

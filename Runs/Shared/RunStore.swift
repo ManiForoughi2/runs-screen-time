@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import ManagedSettings
 #if canImport(WidgetKit)
 import WidgetKit
 #endif
@@ -17,6 +18,16 @@ final class RunStore: ObservableObject {
     @Published private(set) var sharedRuns: Int = 4
     @Published private(set) var sharedUsed: Int = 0
     @Published private(set) var lockUntil: Date?       // nil = unlocked; .distantFuture = forever
+    @Published private(set) var fullBlock: Bool = false // all apps 0 runs, emergency-only
+    @Published private(set) var emergencyUses: [Date] = []  // spent emergencies, pruned to window
+    @Published private(set) var breatheSeconds: Int = 5     // 0 = breathe off
+    @Published private(set) var breatheSolo: Bool = false   // no budget, breathe only
+    @Published private(set) var webBlocking: Bool = true
+    @Published private(set) var platformOverrides: [String: Bool] = [:]
+    @Published private(set) var pairedPlatformIDs: Set<String> = []
+    @Published private(set) var platformPairs: [String: String] = [:]  // limitID -> platformID
+    @Published private(set) var webDomainTokens: Set<WebDomainToken> = []
+    @Published private(set) var webSessions: [String: Date] = [:]      // platformID -> endsAt
 
     private let defaults = AppGroup.defaults
 
@@ -35,7 +46,168 @@ final class RunStore: ObservableObject {
         runMode = RunMode(rawValue: defaults.string(forKey: StoreKey.runMode) ?? "") ?? .shared
         sharedRuns = defaults.object(forKey: StoreKey.sharedRuns) as? Int ?? 4
         sharedUsed = defaults.integer(forKey: StoreKey.sharedUsed)
+        fullBlock = defaults.bool(forKey: StoreKey.fullBlock)
+        breatheSeconds = defaults.object(forKey: StoreKey.breatheSeconds) as? Int ?? 5
+        breatheSolo = defaults.bool(forKey: StoreKey.breatheSolo)
+        webBlocking = defaults.object(forKey: StoreKey.webBlocking) as? Bool ?? true
+        platformOverrides = defaults.dictionary(forKey: StoreKey.platformOverrides) as? [String: Bool] ?? [:]
+        pairedPlatformIDs = WebPolicy.pairedPlatformIDs()
+        platformPairs = defaults.dictionary(forKey: StoreKey.platformPairs) as? [String: String] ?? [:]
+        webDomainTokens = decode(Set<WebDomainToken>.self, StoreKey.webDomainTokens) ?? []
+        let sessions = defaults.dictionary(forKey: StoreKey.webSessions) as? [String: Double] ?? [:]
+        webSessions = sessions.mapValues { Date(timeIntervalSince1970: $0) }
+        loadEmergencies()
         loadLock()
+    }
+
+    // MARK: breathe + web blocking
+
+    func setBreatheSeconds(_ seconds: Int) {
+        breatheSeconds = seconds
+        defaults.set(seconds, forKey: StoreKey.breatheSeconds)
+    }
+
+    // dropping the budget entirely is loosening, so solo can't be enabled while locked
+    func setBreatheSolo(_ on: Bool) {
+        if isLocked && on { return }
+        breatheSolo = on
+        defaults.set(on, forKey: StoreKey.breatheSolo)
+        writeWidgetSnapshot()
+    }
+
+    // web blocking can be enabled anytime but only disabled while unlocked
+    func setWebBlocking(_ on: Bool) {
+        if isLocked && !on { return }
+        webBlocking = on
+        defaults.set(on, forKey: StoreKey.webBlocking)
+    }
+
+    // effective chip state: manual override wins, else auto-detected pairing
+    func isPlatformBlocked(_ id: String) -> Bool {
+        platformOverrides[id] ?? pairedPlatformIDs.contains(id)
+    }
+
+    func togglePlatform(_ id: String) {
+        let current = isPlatformBlocked(id)
+        if isLocked && current { return }   // unblocking a site while locked = loosening
+        platformOverrides[id] = !current
+        defaults.set(platformOverrides, forKey: StoreKey.platformOverrides)
+    }
+
+    // sites hand-picked in the picker's websites tab. while locked they can
+    // only be added, mirroring setLimits
+    func setWebDomainTokens(_ new: Set<WebDomainToken>) {
+        if isLocked && !webDomainTokens.isSubset(of: new) { return }
+        webDomainTokens = new
+        encode(new, StoreKey.webDomainTokens)
+    }
+
+    // MARK: breathe-opened web sessions (chrome/brave have no extensions on iOS,
+    // so the breathe happens in-app and grants the site a timed unblock)
+
+    func pairedLimit(for platform: Platform) -> LimitConfig? {
+        limits.first { platformPairs[$0.id.uuidString] == platform.id }
+    }
+
+    func webSessionEndsAt(_ platformID: String) -> Date? {
+        guard let endsAt = webSessions[platformID], endsAt > Date() else { return nil }
+        return endsAt
+    }
+
+    func webSessionMinutes(for platform: Platform) -> Int {
+        pairedLimit(for: platform)?.minutesPerRun ?? 3
+    }
+
+    // sessions are free (no run spent) but the budget still gates them: out of
+    // runs means the web rests too. solo breathe has no budget at all.
+    func canStartWebSession(for platform: Platform) -> Bool {
+        if fullBlock { return false }
+        if breatheSolo { return true }
+        if let limit = pairedLimit(for: platform) { return runsLeft(for: limit) > 0 }
+        return runMode == .shared ? max(0, sharedRuns - sharedUsed) > 0 : true
+    }
+
+    func beginWebSession(for platform: Platform) -> Date {
+        let endsAt = Date().addingTimeInterval(TimeInterval(webSessionMinutes(for: platform) * 60))
+        webSessions = webSessions.filter { $0.value > Date() }   // prune expired
+        webSessions[platform.id] = endsAt
+        defaults.set(webSessions.mapValues { $0.timeIntervalSince1970 }, forKey: StoreKey.webSessions)
+        return endsAt
+    }
+
+    // MARK: full block + emergency allowance
+
+    private func loadEmergencies() {
+        let epochs = defaults.array(forKey: StoreKey.emergencyUses) as? [Double] ?? []
+        emergencyUses = epochs.map { Date(timeIntervalSince1970: $0) }
+        pruneEmergencies()
+    }
+
+    // uses still inside the rolling window. pure read (no mutation/persist) so it's
+    // safe to call from SwiftUI body; the stored array is compacted separately.
+    private var liveEmergencyUses: [Date] {
+        let cutoff = Date().addingTimeInterval(-Emergency.windowSeconds)
+        return emergencyUses.filter { $0 > cutoff }
+    }
+
+    // drop expired uses from storage. called at lifecycle points (load, spend),
+    // never mid-render — reads use liveEmergencyUses instead to avoid publishing
+    // a change from within a view update.
+    private func pruneEmergencies() {
+        let kept = liveEmergencyUses
+        if kept.count != emergencyUses.count {
+            emergencyUses = kept
+            persistEmergencies()
+        }
+    }
+
+    private func persistEmergencies() {
+        defaults.set(emergencyUses.map(\.timeIntervalSince1970), forKey: StoreKey.emergencyUses)
+    }
+
+    // full block can only be turned ON while locked (tightening), never OFF
+    func setFullBlock(_ on: Bool) {
+        if isLocked && !on { return }
+        fullBlock = on
+        defaults.set(on, forKey: StoreKey.fullBlock)
+        writeWidgetSnapshot()
+    }
+
+    var emergenciesLeft: Int {
+        max(0, Emergency.total - liveEmergencyUses.count)
+    }
+
+    // when the oldest in-window use frees up, nil unless all are currently spent
+    func nextEmergencyRefill() -> Date? {
+        let live = liveEmergencyUses
+        guard live.count >= Emergency.total, let oldest = live.min() else { return nil }
+        return oldest.addingTimeInterval(Emergency.windowSeconds)
+    }
+
+    func canStartEmergency() -> Bool {
+        activeRun == nil && emergenciesLeft > 0
+    }
+
+    // spend one emergency and open an all-apps run for Emergency.minutes.
+    // no day/pool counter touched — the allowance is the only budget.
+    func beginEmergencyRun() -> ActiveRun {
+        rolloverIfNeeded()
+        pruneEmergencies()
+        let now = Date()
+        emergencyUses.append(now)
+        persistEmergencies()
+
+        let run = ActiveRun(
+            limitID: UUID(),                 // synthetic, not tied to a limit
+            label: "EMERGENCY",
+            startedAt: now,
+            endsAt: now.addingTimeInterval(TimeInterval(Emergency.minutes * 60)),
+            minutesPerRun: Emergency.minutes,
+            isEmergency: true
+        )
+        activeRun = run
+        persistActive()
+        return run
     }
 
     // commitment lock invariant: while locked settings can only tighten, and the
@@ -128,7 +300,7 @@ final class RunStore: ObservableObject {
             activeLabel: activeRun.map { $0.label.isEmpty ? "RUN" : $0.label },
             activeEndsAt: activeRun?.endsAt,
             isPooled: runMode == .shared,
-            poolLeft: max(0, sharedRuns - sharedUsed),
+            poolLeft: fullBlock ? 0 : max(0, sharedRuns - sharedUsed),
             poolTotal: sharedRuns
         )
         encode(snapshot, StoreKey.widgetSnapshot)
@@ -195,6 +367,7 @@ final class RunStore: ObservableObject {
     }
 
     func runsLeft(for limit: LimitConfig) -> Int {
+        if fullBlock { return 0 }   // full block: normal runs disabled, emergency-only
         switch runMode {
         case .perApp: return max(0, limit.runsPerDay - (dayState.runsUsed[limit.id] ?? 0))
         case .shared: return max(0, sharedRuns - sharedUsed)
@@ -206,18 +379,23 @@ final class RunStore: ObservableObject {
     }
 
     func canStartRun(for limit: LimitConfig) -> Bool {
-        activeRun == nil && runsLeft(for: limit) > 0
+        guard activeRun == nil else { return false }
+        if breatheSolo && !fullBlock { return true }   // no budget in solo mode
+        return runsLeft(for: limit) > 0
     }
 
     func beginRun(for limit: LimitConfig) -> ActiveRun {
         rolloverIfNeeded()
-        switch runMode {
-        case .perApp:
-            dayState.runsUsed[limit.id] = (dayState.runsUsed[limit.id] ?? 0) + 1
-            persistDay()
-        case .shared:
-            sharedUsed += 1
-            defaults.set(sharedUsed, forKey: StoreKey.sharedUsed)
+        // solo breathe has no budget, nothing to spend
+        if !breatheSolo {
+            switch runMode {
+            case .perApp:
+                dayState.runsUsed[limit.id] = (dayState.runsUsed[limit.id] ?? 0) + 1
+                persistDay()
+            case .shared:
+                sharedUsed += 1
+                defaults.set(sharedUsed, forKey: StoreKey.sharedUsed)
+            }
         }
 
         let now = Date()

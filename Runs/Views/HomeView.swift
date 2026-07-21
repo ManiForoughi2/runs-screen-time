@@ -9,12 +9,18 @@ struct HomeView: View {
     @Environment(\.requestReview) private var requestReview
     @State private var showSettings = false
     @State private var showPicker = false
-    @State private var selection = FamilyActivitySelection()
+    @State private var breatheTarget: Platform?
+    // includeEntireCategory expands a picked category (e.g. Social) into its
+    // individual apps so each gets its own limit instead of being ignored
+    @State private var selection = FamilyActivitySelection(includeEntireCategory: true)
 
     private var hasActiveRun: Bool { store.activeRun != nil }
-    // in shared mode every row draws the same pool, so we lift it to one bar
+    // in shared mode every row draws the same pool, so we lift it to one bar.
+    // full block always has 0 in the pool, so the bar is hidden then.
+    // solo breathe has no budget, so there's no pool to show either.
     private var showsPoolBar: Bool {
         store.runMode == .shared && !store.limits.isEmpty && !hasActiveRun
+            && !store.fullBlock && !store.breatheSolo
     }
 
     var body: some View {
@@ -50,18 +56,33 @@ struct HomeView: View {
         }
         .familyActivityPicker(isPresented: $showPicker, selection: $selection)
         .onChange(of: selection) { newValue in
-            reconcile(newValue.applicationTokens)
+            reconcile(newValue)
+        }
+        .fullScreenCover(item: $breatheTarget) { platform in
+            BreatheView(platform: platform)
+                .environmentObject(engine)
+                .environmentObject(store)
+                .preferredColorScheme(store.themeMode.colorScheme)
         }
     }
 
-    private func reconcile(_ tokens: Set<ApplicationToken>) {
+    // blocked sites that can be breathed open (paired automatically or toggled
+    // in settings). chrome/brave on iOS can't run extensions, so the breathe
+    // for websites happens here in the app.
+    private var webPlatforms: [Platform] {
+        guard store.webBlocking else { return [] }
+        return Platform.all.filter { store.isPlatformBlocked($0.id) }
+    }
+
+    private func reconcile(_ sel: FamilyActivitySelection) {
         var limits = store.limits
-        limits.removeAll { !tokens.contains($0.token) }
+        limits.removeAll { !sel.applicationTokens.contains($0.token) }
         let existing = Set(limits.map(\.token))
-        for token in tokens where !existing.contains(token) {
+        for token in sel.applicationTokens where !existing.contains(token) {
             limits.append(LimitConfig(token: token, label: "", minutesPerRun: 3, runsPerDay: 4))
         }
         store.setLimits(limits)
+        store.setWebDomainTokens(sel.webDomainTokens)
         engine.reapplyBaselineShield()
     }
 
@@ -103,10 +124,60 @@ struct HomeView: View {
                 ForEach(store.limits) { limit in
                     RunRow(limit: limit)
                 }
+
+                if !webPlatforms.isEmpty {
+                    webCard
+                        .padding(.top, 10)
+                }
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 32)
         }
+    }
+
+    private var webCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("WEB")
+                .font(Theme.mono(11, .bold))
+                .tracking(2)
+                .foregroundStyle(Theme.dim)
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 8)], spacing: 8) {
+                ForEach(webPlatforms) { platform in
+                    let open = store.webSessionEndsAt(platform.id) != nil
+                    let canStart = store.canStartWebSession(for: platform)
+                    Button {
+                        if !open && canStart { breatheTarget = platform }
+                    } label: {
+                        Text(open ? "\(platform.name.uppercased()) · OPEN" : platform.name.uppercased())
+                            .font(Theme.mono(11, .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                            .foregroundStyle(open ? Theme.bg : Theme.fg)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(open ? Theme.fg : Color.clear)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(open ? Theme.fg : Theme.hairline, lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .contentShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
+                    .opacity(open || canStart ? 1 : 0.4)
+                }
+            }
+
+            Text("sites rest in every browser. tap to breathe one open.")
+                .font(Theme.mono(11))
+                .foregroundStyle(Theme.dim)
+        }
+        .padding(16)
+        .overlay(
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(Theme.hairline, lineWidth: 1)
+        )
     }
 
     private var emptyState: some View {
@@ -117,6 +188,7 @@ struct HomeView: View {
                 .foregroundStyle(Theme.dim)
             Button {
                 selection.applicationTokens = Set(store.limits.map(\.token))
+                selection.webDomainTokens = store.webDomainTokens
                 showPicker = true
             } label: {
                 Text("CHOOSE APPS")
@@ -136,8 +208,18 @@ private struct RunRow: View {
 
     private var left: Int { store.runsLeft(for: limit) }
     private var total: Int { store.runsTotal(for: limit) }
-    // shared mode shows one pool bar instead, so per-row pips are redundant
-    private var showsPips: Bool { store.runMode != .shared }
+    // shared mode shows one pool bar instead, so per-row pips are redundant.
+    // full block zeroes every run, so pips would just be an empty row.
+    // solo breathe has no budget, so pips are meaningless.
+    private var showsPips: Bool { store.runMode != .shared && !store.fullBlock && !store.breatheSolo }
+
+    private var startEnabled: Bool { store.canStartRun(for: limit) }
+
+    private var startLabel: String {
+        if store.fullBlock { return "BLOCKED" }
+        if store.breatheSolo { return "OPEN" }
+        return left > 0 ? "START RUN" : "DONE FOR TODAY"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -182,11 +264,11 @@ private struct RunRow: View {
             Button {
                 engine.startRun(for: limit)
             } label: {
-                Text(left > 0 ? "START RUN" : "DONE FOR TODAY")
+                Text(startLabel)
             }
-            .buttonStyle(OutlineButtonStyle(filled: left > 0))
-            .disabled(left == 0 || !store.canStartRun(for: limit))
-            .opacity(left == 0 ? 0.4 : 1)
+            .buttonStyle(OutlineButtonStyle(filled: startEnabled))
+            .disabled(!startEnabled)
+            .opacity(startEnabled ? 1 : 0.4)
         }
         .padding(18)
         .overlay(

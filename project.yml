@@ -11,7 +11,7 @@ settings:
     DEVELOPMENT_TEAM: 883U8FU57P
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "3"
+    CURRENT_PROJECT_VERSION: "4"
     CODE_SIGN_STYLE: Automatic
     GENERATE_INFOPLIST_FILE: YES
     ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -106,6 +106,9 @@ targets:
       - path: Runs/Shared/RunActivityAttributes.swift
       # shared so the monitor + shield can read the active run's wall-clock end
       - path: Runs/Shared/AppGroup.swift
+      # shared so run-end can re-apply the web blocks (paired sites + picker sites)
+      - path: Runs/Shared/PlatformCatalog.swift
+      - path: Runs/Shared/WebPolicy.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.manif.runs.monitor
@@ -131,6 +134,10 @@ targets:
     platform: iOS
     sources:
       - path: RunsShield
+      # shared so the shield can match the app it's covering against the
+      # platform catalog and record the app<->website pairing
+      - path: Runs/Shared/AppGroup.swift
+      - path: Runs/Shared/PlatformCatalog.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.manif.runs.shield
@@ -154,6 +161,10 @@ targets:
     platform: iOS
     sources:
       - path: RunsShieldAction
+      # shared so breathe-to-open can spend runs and re-apply web blocks
+      - path: Runs/Shared/AppGroup.swift
+      - path: Runs/Shared/PlatformCatalog.swift
+      - path: Runs/Shared/WebPolicy.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.manif.runs.shieldaction
@@ -168,3 +179,5 @@ targets:
           - group.com.manif.runs
     dependencies:
       - sdk: ManagedSettings.framework
+      # breathe-to-open arms the re-lock ladder from the shield tap
+      - sdk: DeviceActivity.framework

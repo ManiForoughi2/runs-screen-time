@@ -12,6 +12,10 @@ struct ShieldStore {
     private static let kSharedUsed = "runs.sharedUsed.v1"
 
     private static let kActiveRun = "runs.activeRun.v1"
+    private static let kFullBlock = "runs.fullBlock.v1"
+    private static let kBreatheSeconds = "runs.breatheSeconds.v1"
+    private static let kBreatheSolo = "runs.breatheSolo.v1"
+    private static let kBreatheSession = "runs.breatheSession.v1"
 
     private let defaults = UserDefaults(suiteName: groupID)
     private let limits: [Limit]
@@ -21,17 +25,37 @@ struct ShieldStore {
     private let sharedUsed: Int
     private let activeRunLimitID: String?
     private let activeRunEndsAt: Date?
+    let fullBlock: Bool
+    let breatheSeconds: Int
+    let breatheSolo: Bool
+    let breatheSession: BreatheSession?
+
+    struct BreatheSession: Codable {
+        let limitID: UUID
+        let startedAt: Date
+    }
 
     init() {
         let d = UserDefaults(suiteName: Self.groupID)
         limits = Self.decode([Limit].self, Self.kLimits, d) ?? []
         runsUsedByID = (Self.decode(DayState.self, Self.kDayState, d))?.runsUsed ?? [:]
-        runMode = d?.string(forKey: Self.kRunMode) ?? "perApp"
+        // missing key means the user never changed modes; the app's default is shared
+        runMode = d?.string(forKey: Self.kRunMode) ?? "shared"
         sharedRuns = d?.object(forKey: Self.kSharedRuns) as? Int ?? 4
         sharedUsed = d?.integer(forKey: Self.kSharedUsed) ?? 0
         let run = Self.decode(ActiveRunDTO.self, Self.kActiveRun, d)
         activeRunLimitID = run?.limitID.uuidString
         activeRunEndsAt = run?.endsAt
+        fullBlock = d?.bool(forKey: Self.kFullBlock) ?? false
+        breatheSeconds = d?.object(forKey: Self.kBreatheSeconds) as? Int ?? 5
+        breatheSolo = d?.bool(forKey: Self.kBreatheSolo) ?? false
+        breatheSession = Self.decode(BreatheSession.self, Self.kBreatheSession, d)
+    }
+
+    // some OTHER app's run is live: a new run can't start until it ends
+    var anyLiveRun: Bool {
+        guard let endsAt = activeRunEndsAt else { return false }
+        return Date() < endsAt
     }
 
     func limit(for token: ApplicationToken) -> Limit? {

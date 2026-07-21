@@ -23,6 +23,9 @@ final class RunEngine: ObservableObject {
     // overrun of a short backgrounded run at 15 min instead of indefinite.
     static let runCeilingName = DeviceActivityName("runs.activeRun.ceiling")
     static let dailyActivityName = DeviceActivityName("runs.daily")
+    // breathe-opened web session re-block window (own name so its end never
+    // clobbers a live app run in the monitor)
+    static let webSessionName = DeviceActivityName("runs.webSession")
     // usage-ladder tick events, one per minute of foreground use. the monitor checks
     // the wall clock on each and re-shields once the run's endsAt has passed.
     static func tickEvent(_ minute: Int) -> DeviceActivityEvent.Name {
@@ -53,15 +56,41 @@ final class RunEngine: ObservableObject {
 
     // call on launch / whenever limits change
     func reapplyBaselineShield() {
+        // the shield action extension can now start runs (breathe-to-open) and
+        // spend counters behind our back, so re-read the group state before
+        // reconciling or we'd re-shield an app the user just breathed into
+        store.load()
         store.rolloverIfNeeded()
         endRunIfExpired()
 
         let all = Set(store.limits.map(\.token))
-        let openToken: ApplicationToken? = store.activeRun.flatMap { run in
-            store.limits.first { $0.id == run.limitID }?.token
+        if let run = store.activeRun, run.isEmergency {
+            // emergency unshields everything for its duration
+            shield.applyShield(allTokens: all, except: nil, unshieldAll: true)
+            shield.applyWebShield(nil)
+            shield.applyWebFilter([])
+        } else {
+            let openToken: ApplicationToken? = store.activeRun.flatMap { run in
+                store.limits.first { $0.id == run.limitID }?.token
+            }
+            shield.applyShield(allTokens: all, except: openToken)
+            shield.applyWebShield(store.webDomainTokens)
+            shield.applyWebFilter(WebPolicy.blockedDomains(excludingLimitID: store.activeRun?.limitID))
         }
-        shield.applyShield(allTokens: all, except: openToken)
+        adoptLiveActivityIfNeeded()
         scheduleDailyReset()
+    }
+
+    // a run begun from the shield (breathe-to-open) starts in the action
+    // extension, which can't request a Live Activity. pick it up on our next
+    // foreground so the lock-screen/island timer still appears mid-run.
+    private func adoptLiveActivityIfNeeded() {
+        guard let run = store.activeRun, !run.isEmergency,
+              Activity<RunActivityAttributes>.activities.isEmpty,
+              let limit = store.limits.first(where: { $0.id == run.limitID })
+        else { return }
+        startLiveActivity(label: limit.label, runsLeftAfter: store.runsLeft(for: limit), run: run)
+        RunNotifier.scheduleRunEnd(label: run.label, at: run.endsAt)
     }
 
     // repeating daily window whose intervalDidEnd lands exactly at local midnight,
@@ -121,9 +150,55 @@ final class RunEngine: ObservableObject {
 
         let all = Set(store.limits.map(\.token))
         shield.applyShield(allTokens: all, except: limit.token)
+        // a run frees the app AND its paired website together
+        shield.applyWebFilter(WebPolicy.blockedDomains(excludingLimitID: limit.id))
 
-        scheduleRunEnd(for: limit, run: run)
-        startLiveActivity(for: limit, run: run)
+        scheduleRunEnd(tokens: [limit.token], run: run)
+        startLiveActivity(label: limit.label, runsLeftAfter: store.runsLeft(for: limit), run: run)
+    }
+
+    // full-block escape hatch: spend one emergency and unshield EVERY app for a
+    // short fixed window. re-locks through the same usage-ladder + ceiling as a
+    // normal run; the ticks watch all tokens so any app the user opens ticks it.
+    func startEmergencyRun() {
+        guard store.canStartEmergency() else { return }
+
+        let run = store.beginEmergencyRun()
+
+        let all = Set(store.limits.map(\.token))
+        shield.applyShield(allTokens: all, except: nil, unshieldAll: true)
+        shield.applyWebShield(nil)
+        shield.applyWebFilter([])
+
+        scheduleRunEnd(tokens: all, run: run)
+        startLiveActivity(label: "Emergency", runsLeftAfter: store.emergenciesLeft, run: run)
+    }
+
+    // breathe done in-app: unblock the platform's site in every browser for its
+    // minutes. wall clock (webSessions endsAt) is the truth; the schedule below
+    // is the wake that re-applies the filter, floored at 15 min like everything
+    // else, with foreground/BG reconciles as extra nets.
+    func startWebSession(for platform: Platform) {
+        guard store.canStartWebSession(for: platform) else { return }
+        let endsAt = store.beginWebSession(for: platform)
+
+        shield.applyWebFilter(WebPolicy.blockedDomains(excludingLimitID: store.activeRun?.limitID))
+
+        let start = Date()
+        let cal = Calendar.current
+        let windowEnd = max(endsAt.timeIntervalSince(start), 15 * 60)
+        let schedule = DeviceActivitySchedule(
+            intervalStart: cal.dateComponents([.hour, .minute, .second], from: start),
+            intervalEnd: cal.dateComponents([.hour, .minute, .second],
+                                            from: start.addingTimeInterval(windowEnd)),
+            repeats: false
+        )
+        center.stopMonitoring([Self.webSessionName])
+        do {
+            try center.startMonitoring(Self.webSessionName, during: schedule)
+        } catch {
+            print("web session schedule failed: \(error)")
+        }
     }
 
     func endRunNow() {
@@ -134,6 +209,8 @@ final class RunEngine: ObservableObject {
         RunNotifier.cancelRunEnd()
         let all = Set(store.limits.map(\.token))
         shield.applyShield(allTokens: all, except: nil)
+        shield.applyWebShield(store.webDomainTokens)
+        shield.applyWebFilter(WebPolicy.blockedDomains())
         Task { await endLiveActivity() }
     }
 
@@ -146,8 +223,10 @@ final class RunEngine: ObservableObject {
             // later run and reblock an app the user just opened
             center.stopMonitoring([Self.runActivityName, Self.runCeilingName])
             RunNotifier.cancelRunEnd()
-                let all = Set(store.limits.map(\.token))
+            let all = Set(store.limits.map(\.token))
             shield.applyShield(allTokens: all, except: nil)
+            shield.applyWebShield(store.webDomainTokens)
+            shield.applyWebFilter(WebPolicy.blockedDomains())
             Task { await endLiveActivity() }
         }
     }
@@ -173,7 +252,7 @@ final class RunEngine: ObservableObject {
     // The 15-min ceiling schedule (scheduleCeiling) is the wall-clock backstop for the
     // idle/backgrounded case; the shield-config endsAt gate catches a re-open after
     // expiry; in-app timer + foreground reconcile remain.
-    private func scheduleRunEnd(for limit: LimitConfig, run: ActiveRun) {
+    private func scheduleRunEnd(tokens: Set<ApplicationToken>, run: ActiveRun) {
         let cal = Calendar.current
         let startComps = cal.dateComponents([.hour, .minute, .second], from: run.startedAt)
         // long outer window the usage events live inside. must be >= 15 min or iOS
@@ -188,12 +267,13 @@ final class RunEngine: ObservableObject {
 
         // usage ladder: a tick at each minute of foreground use, a few past the
         // run length so late/dropped ticks still get a follow-up. 1-minute is the
-        // reliable granularity floor for DeviceActivityEvent thresholds.
-        let lastMinute = max(limit.minutesPerRun + 3, 4)
+        // reliable granularity floor for DeviceActivityEvent thresholds. the events
+        // watch every unshielded app so whichever the user opens keeps ticking.
+        let lastMinute = max(run.minutesPerRun + 3, 4)
         var events: [DeviceActivityEvent.Name: DeviceActivityEvent] = [:]
         for m in 1...lastMinute {
             events[Self.tickEvent(m)] = DeviceActivityEvent(
-                applications: [limit.token],
+                applications: tokens,
                 threshold: DateComponents(minute: m)
             )
         }
@@ -206,7 +286,7 @@ final class RunEngine: ObservableObject {
         }
 
         scheduleCeiling(from: run.startedAt)
-        scheduleEndNotification(for: limit, run: run)
+        RunNotifier.scheduleRunEnd(label: run.label, at: run.endsAt)
     }
 
     // guaranteed-ceiling window: exactly 15 min (apple's schedule floor) from run
@@ -229,19 +309,12 @@ final class RunEngine: ObservableObject {
         }
     }
 
-    // fires a buzz/alarm at the wall-clock end even for short runs (notifications
-    // have no 15-min floor). it cant re-shield on its own, but it's time-sensitive
-    // so it breaks through, and tapping it deep-links into Runs which re-locks.
-    private func scheduleEndNotification(for limit: LimitConfig, run: ActiveRun) {
-        RunNotifier.scheduleRunEnd(label: limit.label, at: run.endsAt)
-    }
-
-    private func startLiveActivity(for limit: LimitConfig, run: ActiveRun) {
+    private func startLiveActivity(label: String, runsLeftAfter: Int, run: ActiveRun) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-        let liveLabel = limit.label.isEmpty ? "Run" : limit.label
+        let liveLabel = label.isEmpty ? "Run" : label
         let attrs = RunActivityAttributes(
             appLabel: liveLabel,
-            runsLeftAfter: store.runsLeft(for: limit)
+            runsLeftAfter: runsLeftAfter
         )
         let state = RunActivityAttributes.ContentState(endsAt: run.endsAt, startedAt: run.startedAt)
         do {

@@ -20,7 +20,21 @@ final class RunMonitorExtension: DeviceActivityMonitor {
             return   // daily reset must not reblock/clear an in-progress run
         }
 
+        if activity.rawValue == "runs.webSession" {
+            // a breathe-opened site's window closed: re-apply the web filter
+            // only. app shields and any live run must not be touched.
+            reapplyWebFilter()
+            return
+        }
+
         endRunNow()
+    }
+
+    private func reapplyWebFilter() {
+        let domains = WebPolicy.blockedDomains()
+        store.webContent.blockedByFilter = domains.isEmpty
+            ? nil
+            : .specific(Set(domains.map { WebDomain(domain: $0) }))
     }
 
     // usage-ladder tick: fires at each minute of foreground use. the THRESHOLD only
@@ -95,6 +109,21 @@ final class RunMonitorExtension: DeviceActivityMonitor {
     private func reblockAll() {
         let tokens = configuredTokens()
         store.shield.applications = tokens.isEmpty ? nil : tokens
+
+        // the ended run may have freed its paired website; re-block the full set
+        let domains = WebPolicy.blockedDomains()
+        store.webContent.blockedByFilter = domains.isEmpty
+            ? nil
+            : .specific(Set(domains.map { WebDomain(domain: $0) }))
+        store.shield.webDomains = pickedWebDomains()
+    }
+
+    private func pickedWebDomains() -> Set<WebDomainToken>? {
+        guard let data = defaults?.data(forKey: StoreKey.webDomainTokens),
+              let tokens = try? JSONDecoder().decode(Set<WebDomainToken>.self, from: data),
+              !tokens.isEmpty
+        else { return nil }
+        return tokens
     }
 
     private func configuredTokens() -> Set<ApplicationToken> {

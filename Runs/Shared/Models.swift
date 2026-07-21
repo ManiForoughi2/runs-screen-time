@@ -110,4 +110,15 @@ struct ActiveRun: Codable, Equatable {
     var startedAt: Date
     var endsAt: Date
     var minutesPerRun: Int
+    // an emergency run (full-block escape hatch) unshields EVERY app for its
+    // duration instead of all-except-one, and doesn't spend a normal run.
+    var isEmergency: Bool = false
+}
+
+// full-block emergency allowance: N uses per rolling window. we store the
+// timestamps of spent emergencies and count only those still inside the window.
+enum Emergency {
+    static let total = 3
+    static let minutes = 3
+    static let windowSeconds: TimeInterval = 7 * 86_400
 }
