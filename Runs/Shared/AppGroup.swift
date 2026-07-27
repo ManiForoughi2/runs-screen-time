@@ -49,4 +49,9 @@ enum StoreKey {
     // brave can't run extensions, so the breathe happens in the app and the
     // site unblocks here for its minutes
     static let webSessions = "runs.webSessions.v1"
+    // user-added blocked sites beyond the catalog ([String] bare domains)
+    static let customSites = "runs.customSites.v1"
+    // per-site minutes-per-visit exceptions, platform id -> minutes
+    // (e.g. youtube gets 15 while the default stays short)
+    static let webMinutes = "runs.webMinutes.v1"
 }

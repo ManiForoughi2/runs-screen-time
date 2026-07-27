@@ -28,6 +28,8 @@ final class RunStore: ObservableObject {
     @Published private(set) var platformPairs: [String: String] = [:]  // limitID -> platformID
     @Published private(set) var webDomainTokens: Set<WebDomainToken> = []
     @Published private(set) var webSessions: [String: Date] = [:]      // platformID -> endsAt
+    @Published private(set) var customSites: [String] = []             // user-added domains
+    @Published private(set) var webMinutes: [String: Int] = [:]        // platformID -> min/visit
 
     private let defaults = AppGroup.defaults
 
@@ -56,6 +58,8 @@ final class RunStore: ObservableObject {
         webDomainTokens = decode(Set<WebDomainToken>.self, StoreKey.webDomainTokens) ?? []
         let sessions = defaults.dictionary(forKey: StoreKey.webSessions) as? [String: Double] ?? [:]
         webSessions = sessions.mapValues { Date(timeIntervalSince1970: $0) }
+        customSites = defaults.stringArray(forKey: StoreKey.customSites) ?? []
+        webMinutes = defaults.dictionary(forKey: StoreKey.webMinutes) as? [String: Int] ?? [:]
         loadEmergencies()
         loadLock()
     }
@@ -114,8 +118,43 @@ final class RunStore: ObservableObject {
         return endsAt
     }
 
+    // site exception first (e.g. youtube 15), else the paired app's minutes
     func webSessionMinutes(for platform: Platform) -> Int {
-        pairedLimit(for: platform)?.minutesPerRun ?? 3
+        webMinutes[platform.id] ?? pairedLimit(for: platform)?.minutesPerRun ?? 3
+    }
+
+    // MARK: site rules (advanced: custom sites + minutes-per-visit exceptions)
+
+    // more minutes per visit is loosening, blocked while locked; less is fine
+    func setWebMinutes(_ platformID: String, minutes: Int) {
+        let clamped = min(60, max(1, minutes))
+        if isLocked, let platform = Platform.byID(platformID),
+           clamped > webSessionMinutes(for: platform) { return }
+        webMinutes[platformID] = clamped
+        defaults.set(webMinutes, forKey: StoreKey.webMinutes)
+    }
+
+    // "youtube.com" from whatever was pasted: scheme/www/path stripped
+    static func cleanDomain(_ raw: String) -> String? {
+        var s = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        for prefix in ["https://", "http://", "www."] where s.hasPrefix(prefix) {
+            s = String(s.dropFirst(prefix.count))
+        }
+        if let slash = s.firstIndex(of: "/") { s = String(s[..<slash]) }
+        guard s.contains("."), !s.contains(" "), s.count >= 4 else { return nil }
+        return s
+    }
+
+    func addCustomSite(_ raw: String) {
+        guard let domain = Self.cleanDomain(raw), !customSites.contains(domain) else { return }
+        customSites.append(domain)
+        defaults.set(customSites, forKey: StoreKey.customSites)
+    }
+
+    func removeCustomSite(_ domain: String) {
+        guard !isLocked else { return }   // unblocking a site while locked = loosening
+        customSites.removeAll { $0 == domain }
+        defaults.set(customSites, forKey: StoreKey.customSites)
     }
 
     // sessions are free (no run spent) but the budget still gates them: out of

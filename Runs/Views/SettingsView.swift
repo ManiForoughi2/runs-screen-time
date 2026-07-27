@@ -15,6 +15,8 @@ struct SettingsView: View {
     @State private var showHowItWorks = false
     @State private var pendingLock: LockDuration?
     @State private var confirmEmergency = false
+    @State private var showSiteRules = false
+    @State private var newSite = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -264,8 +266,127 @@ struct SettingsView: View {
                         .font(Theme.mono(11))
                         .foregroundStyle(Theme.dim)
                 }
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { showSiteRules.toggle() }
+                } label: {
+                    Text(showSiteRules ? "SITE RULES ▴" : "SITE RULES ▾")
+                        .font(Theme.mono(11, .bold))
+                        .tracking(2)
+                        .foregroundStyle(Theme.dim)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                if showSiteRules {
+                    siteRules
+                }
             }
         }
+    }
+
+    // advanced: per-site minutes-per-visit exceptions + custom sites beyond
+    // the catalog (e.g. youtube gets 15 min while everything else stays short)
+    private var activeSitePlatforms: [Platform] {
+        Platform.all.filter { store.isPlatformBlocked($0.id) }
+            + store.customSites.map(Platform.custom)
+    }
+
+    private var siteRules: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(activeSitePlatforms) { platform in
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(platform.name.uppercased())
+                            .font(Theme.mono(12, .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .foregroundStyle(Theme.fg)
+                        Text("\(store.webSessionMinutes(for: platform)) min / visit")
+                            .font(Theme.mono(10))
+                            .foregroundStyle(Theme.dim)
+                    }
+                    Spacer()
+                    siteStepButton("–") { adjustSiteMinutes(platform, -1) }
+                    siteStepButton("+") { adjustSiteMinutes(platform, 1) }
+                    if platform.isCustom {
+                        Button {
+                            store.removeCustomSite(platform.name)
+                            engine.reapplyBaselineShield()
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Theme.dim)
+                                .frame(width: 30, height: 30)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(store.isLocked)
+                        .opacity(store.isLocked ? 0.3 : 1)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+
+            if activeSitePlatforms.isEmpty {
+                Text("no sites yet. blocked sites show up here.")
+                    .font(Theme.mono(11))
+                    .foregroundStyle(Theme.dim)
+            }
+
+            HStack(spacing: 10) {
+                TextField("add a site — youtube.com", text: $newSite)
+                    .font(Theme.mono(12))
+                    .foregroundStyle(Theme.fg)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .padding(.vertical, 10)
+                    .padding(.horizontal, 12)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Theme.hairline, lineWidth: 1)
+                    )
+                Button {
+                    store.addCustomSite(newSite)
+                    newSite = ""
+                    engine.reapplyBaselineShield()
+                } label: {
+                    Text("ADD")
+                        .font(Theme.mono(12, .semibold))
+                        .foregroundStyle(Theme.fg)
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, 14)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(Theme.fg, lineWidth: 1.2)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(RunStore.cleanDomain(newSite) == nil)
+                .opacity(RunStore.cleanDomain(newSite) == nil ? 0.4 : 1)
+            }
+            .padding(.top, 4)
+        }
+        .padding(.top, 2)
+    }
+
+    private func adjustSiteMinutes(_ platform: Platform, _ delta: Int) {
+        store.setWebMinutes(platform.id, minutes: store.webSessionMinutes(for: platform) + delta)
+    }
+
+    private func siteStepButton(_ glyph: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(glyph)
+                .font(Theme.mono(15, .bold))
+                .foregroundStyle(Theme.fg)
+                .frame(width: 32, height: 32)
+                .overlay(Circle().stroke(Theme.fg, lineWidth: 1))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var platformChips: some View {

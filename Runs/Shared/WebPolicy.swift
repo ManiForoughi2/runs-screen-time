@@ -42,6 +42,9 @@ enum WebPolicy {
         for (platformID, on) in overrides {
             if on { ids.insert(platformID) } else { ids.remove(platformID) }
         }
+        for domain in customSites() {
+            ids.insert(Platform.customPrefix + domain)
+        }
         ids.subtract(liveSessionPlatformIDs())
         if let excluded {
             let pairs = AppGroup.defaults.dictionary(forKey: StoreKey.platformPairs) as? [String: String] ?? [:]
@@ -54,6 +57,10 @@ enum WebPolicy {
             domains.formUnion(platform.domains)
         }
         return Set(domains.prefix(domainCap))
+    }
+
+    static func customSites() -> [String] {
+        AppGroup.defaults.stringArray(forKey: StoreKey.customSites) ?? []
     }
 
     private static func configuredLimitIDs() -> Set<String> {

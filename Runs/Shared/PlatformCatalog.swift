@@ -31,8 +31,21 @@ struct Platform: Identifiable, Hashable {
         Platform(id: "netflix", name: "Netflix", bundleIDs: ["com.netflix.Netflix"], domains: ["netflix.com"])
     ]
 
+    // user-added sites ride the same rails as catalog platforms: sessions,
+    // minute rules, and chips all key off the platform id
+    static let customPrefix = "custom:"
+
+    static func custom(_ domain: String) -> Platform {
+        Platform(id: customPrefix + domain, name: domain, bundleIDs: [], domains: [domain])
+    }
+
+    var isCustom: Bool { id.hasPrefix(Self.customPrefix) }
+
     static func byID(_ id: String) -> Platform? {
-        all.first { $0.id == id }
+        if id.hasPrefix(customPrefix) {
+            return custom(String(id.dropFirst(customPrefix.count)))
+        }
+        return all.first { $0.id == id }
     }
 
     // display names can carry aliases ("Twitter" for X) that bundle ids can't

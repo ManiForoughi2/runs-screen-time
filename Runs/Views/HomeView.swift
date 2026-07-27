@@ -72,6 +72,7 @@ struct HomeView: View {
     private var webPlatforms: [Platform] {
         guard store.webBlocking else { return [] }
         return Platform.all.filter { store.isPlatformBlocked($0.id) }
+            + store.customSites.map(Platform.custom)
     }
 
     private func reconcile(_ sel: FamilyActivitySelection) {
